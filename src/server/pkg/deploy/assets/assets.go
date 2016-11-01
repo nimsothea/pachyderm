@@ -17,23 +17,26 @@ import (
 )
 
 var (
-	suite                  = "pachyderm"
-	volumeSuite            = "pachyderm-pps-storage"
-	pachdImage             = "pachyderm/pachd"
-	etcdImage              = "gcr.io/google_containers/etcd:2.0.12"
-	rethinkImage           = "rethinkdb:2.3.3"
-	serviceAccountName     = "pachyderm"
-	etcdName               = "etcd"
-	pachdName              = "pachd"
-	rethinkName            = "rethink"
-	rethinkVolumeName      = "rethink-volume"
-	rethinkVolumeClaimName = "rethink-volume-claim"
-	amazonSecretName       = "amazon-secret"
-	googleSecretName       = "google-secret"
-	microsoftSecretName    = "microsoft-secret"
-	initName               = "pachd-init"
-	trueVal                = true
-	jsonEncoderHandle      = &codec.JsonHandle{
+	suite                       = "pachyderm"
+	volumeSuite                 = "pachyderm-pps-storage"
+	pachdImage                  = "pachyderm/pachd"
+	etcdImage                   = "gcr.io/google_containers/etcd:2.0.12"
+	rethinkImage                = "rethinkdb:2.3.3"
+	rethinkNonCacheMemFootprint = resource.MustParse("256M") // Amount of memory needed by rethink beyond the cache
+	registryImage               = "registry:2"
+	serviceAccountName          = "pachyderm"
+	etcdName                    = "etcd"
+	pachdName                   = "pachd"
+	rethinkName                 = "rethink"
+	rethinkVolumeName           = "rethink-volume"
+	rethinkVolumeClaimName      = "rethink-volume-claim"
+	registryName                = "registry"
+	amazonSecretName            = "amazon-secret"
+	googleSecretName            = "google-secret"
+	microsoftSecretName         = "microsoft-secret"
+	initName                    = "pachd-init"
+	trueVal                     = true
+	jsonEncoderHandle           = &codec.JsonHandle{
 		BasicHandle: codec.BasicHandle{
 			EncodeOptions: codec.EncodeOptions{Canonical: true},
 		},
@@ -371,86 +374,117 @@ func EtcdService() *api.Service {
 	}
 }
 
-// RethinkRc returns a rethinkdb replication controller.
-func RethinkRc(backend backend, volume string, hostPath string, rethinkdbCacheSize string) *api.ReplicationController {
-	replicas := int32(1)
-	rethinkCacheQuantity := resource.MustParse(rethinkdbCacheSize)
+// RethinkPetSet returns a rethinkdb pet set
+func RethinkPetSet(backend backend, replicas int, diskSpace int, cacheSize string) interface{} {
+	rethinkCacheQuantity := resource.MustParse(cacheSize)
 	containerFootprint := rethinkCacheQuantity.Copy()
-	containerFootprint.Add(resource.MustParse("256M"))
-	spec := &api.ReplicationController{
-		TypeMeta: unversioned.TypeMeta{
-			Kind:       "ReplicationController",
-			APIVersion: "v1",
+	containerFootprint.Add(rethinkNonCacheMemFootprint)
+	// As of Oct 24 2016, the Kubernetes client does not include structs for PetSet, so we generate the kubernetes
+	// manifest using raw json.
+
+	// PetSet config:
+	return map[string]interface{}{
+		"apiVersion": "apps/v1alpha1",
+		"kind":       "PetSet",
+		"metadata": map[string]interface{}{
+			"name":              rethinkName,
+			"creationTimestamp": nil,
+			"labels":            labels(rethinkName),
 		},
-		ObjectMeta: api.ObjectMeta{
-			Name:   rethinkName,
-			Labels: labels(rethinkName),
-		},
-		Spec: api.ReplicationControllerSpec{
-			Replicas: &replicas,
-			Selector: map[string]string{
-				"app": rethinkName,
+		"spec": map[string]interface{}{
+			"serviceName": rethinkName, // + "-service",
+			"replicas":    replicas,
+			"selector": map[string]interface{}{
+				"matchLabels": labels(rethinkName),
 			},
-			Template: &api.PodTemplateSpec{
-				ObjectMeta: api.ObjectMeta{
-					Name:   rethinkName,
-					Labels: labels(rethinkName),
+
+			// pod template
+			"template": map[string]interface{}{
+				"metadata": map[string]interface{}{
+					"name":              rethinkName,
+					"creationTimestamp": nil,
+					"labels":            labels(rethinkName),
 				},
-				Spec: api.PodSpec{
-					Containers: []api.Container{
-						{
-							Name:  rethinkName,
-							Image: rethinkImage,
-							//TODO figure out how to get a cluster of these to talk to each other
-							Command: []string{"rethinkdb"},
-							Args: []string{
+				"spec": map[string]interface{}{
+					"containers": []interface{}{
+						map[string]interface{}{
+							"name":    rethinkName,
+							"image":   rethinkImage,
+							"command": []string{"rethinkdb"},
+							"args": []string{
 								"-d", "/var/rethinkdb/data",
 								"--bind", "all",
 								"--cache-size", strconv.FormatInt(rethinkCacheQuantity.ScaledValue(resource.Mega), 10),
+								// "--join", kk
 							},
-							Ports: []api.ContainerPort{
-								{
-									ContainerPort: 8080,
-									Name:          "admin-port",
+							"ports": []interface{}{
+								map[string]interface{}{
+									"containerPort": 8080,
+									"name":          "admin-port",
 								},
-								{
-									ContainerPort: 28015,
-									Name:          "driver-port",
+								map[string]interface{}{
+									"containerPort": 28015,
+									"name":          "driver-port",
 								},
-								{
-									ContainerPort: 29015,
-									Name:          "cluster-port",
-								},
-							},
-							VolumeMounts: []api.VolumeMount{
-								{
-									Name:      "rethink-storage",
-									MountPath: "/var/rethinkdb/",
+								map[string]interface{}{
+									"containerPort": 29015,
+									"name":          "cluster-port",
 								},
 							},
-							ImagePullPolicy: "IfNotPresent",
-							Resources: api.ResourceRequirements{
-								Requests: api.ResourceList{
-									api.ResourceMemory: *containerFootprint,
+							"volumeMounts": []interface{}{
+								map[string]interface{}{
+									"name":      rethinkVolumeClaimName,
+									"mountPath": "/var/rethinkdb/",
+								},
+							},
+							"imagePullPolicy": "IfNotPresent",
+							"resources": map[string]interface{}{
+								"requests": map[string]interface{}{
+									"memory": containerFootprint.String(),
 								},
 							},
 						},
 					},
-					Volumes: []api.Volume{
-						{
-							Name: "rethink-storage",
-							VolumeSource: api.VolumeSource{
-								PersistentVolumeClaim: &api.PersistentVolumeClaimVolumeSource{
-									ClaimName: rethinkVolumeClaimName,
-								},
+				},
+			},
+			"volumeClaimTemplates": []interface{}{
+				map[string]interface{}{
+					"metadata": map[string]interface{}{
+						"name":   rethinkVolumeClaimName,
+						"labels": labels(rethinkName),
+					},
+					"spec": map[string]interface{}{
+						"resources": map[string]interface{}{
+							"requests": map[string]interface{}{
+								"storage": resource.MustParse(fmt.Sprintf("%vGi", diskSpace)),
 							},
 						},
+						"accessModes": []string{"ReadWriteOnce"},
 					},
 				},
 			},
 		},
 	}
-	return spec
+}
+
+// HeadlessRethinkService returns a headless rethinkdb service, which is only for DNS resolution.
+func HeadlessRethinkService() *api.Service {
+	return &api.Service{
+		TypeMeta: unversioned.TypeMeta{
+			Kind:       "Service",
+			APIVersion: "v1",
+		},
+		ObjectMeta: api.ObjectMeta{
+			Name:   rethinkName + "-headless",
+			Labels: labels(rethinkName),
+		},
+		Spec: api.ServiceSpec{
+			Selector: map[string]string{
+				"app": rethinkName,
+			},
+			ClusterIP: "None",
+		},
+	}
 }
 
 // RethinkService returns a rethinkdb service.
@@ -461,7 +495,7 @@ func RethinkService() *api.Service {
 			APIVersion: "v1",
 		},
 		ObjectMeta: api.ObjectMeta{
-			Name:   rethinkName,
+			Name:   rethinkName, // + "-service",
 			Labels: labels(rethinkName),
 		},
 		Spec: api.ServiceSpec{
@@ -606,89 +640,74 @@ func MicrosoftSecret(container string, id string, secret string) *api.Secret {
 
 // RethinkVolume creates a persistent volume with a backend
 // (local, amazon, google), a name, and a size in gigabytes.
-func RethinkVolume(backend backend, hostPath string, name string, size int) *api.PersistentVolume {
-	spec := &api.PersistentVolume{
-		TypeMeta: unversioned.TypeMeta{
-			Kind:       "PersistentVolume",
-			APIVersion: "v1",
-		},
-		ObjectMeta: api.ObjectMeta{
-			Name:   rethinkVolumeName,
-			Labels: volumeLabels(rethinkVolumeName),
-		},
-		Spec: api.PersistentVolumeSpec{
-			Capacity: map[api.ResourceName]resource.Quantity{
-				"storage": resource.MustParse(fmt.Sprintf("%vGi", size)),
-			},
-			AccessModes:                   []api.PersistentVolumeAccessMode{api.ReadWriteOnce},
-			PersistentVolumeReclaimPolicy: api.PersistentVolumeReclaimRetain,
-		},
+func WriteRethinkVolumes(w io.Writer, backend backend, shards int, hostPath string, names []string, size int) {
+	if backend != localBackend && len(names) < shards {
+		panic(fmt.Errorf("Could not create non-local rethink cluster with %d shards, as there are only %d external volumes.", shards, len(names)))
 	}
-
-	switch backend {
-	case amazonBackend:
-		spec.Spec.PersistentVolumeSource = api.PersistentVolumeSource{
-			AWSElasticBlockStore: &api.AWSElasticBlockStoreVolumeSource{
-				FSType:   "ext4",
-				VolumeID: name,
+	encoder := codec.NewEncoder(w, jsonEncoderHandle)
+	for i := 0; i < shards; i++ {
+		spec := &api.PersistentVolume{
+			TypeMeta: unversioned.TypeMeta{
+				Kind:       "PersistentVolume",
+				APIVersion: "v1",
 			},
-		}
-	case googleBackend:
-		spec.Spec.PersistentVolumeSource = api.PersistentVolumeSource{
-			GCEPersistentDisk: &api.GCEPersistentDiskVolumeSource{
-				FSType: "ext4",
-				PDName: name,
+			ObjectMeta: api.ObjectMeta{
+				Name:   fmt.Sprintf("%s-%d", rethinkVolumeName, i),
+				Labels: volumeLabels(rethinkVolumeName),
 			},
-		}
-	case microsoftBackend:
-		dataDiskURI := name
-		split := strings.Split(name, "/")
-		diskName := split[len(split)-1]
-
-		spec.Spec.PersistentVolumeSource = api.PersistentVolumeSource{
-			AzureDisk: &api.AzureDiskVolumeSource{
-				DiskName:    diskName,
-				DataDiskURI: dataDiskURI,
-			},
-		}
-	case localBackend:
-		spec.Spec.PersistentVolumeSource = api.PersistentVolumeSource{
-			HostPath: &api.HostPathVolumeSource{
-				Path: filepath.Join(hostPath, "rethink"),
-			},
-		}
-	default:
-		panic("cannot generate volume spec for unknown backend")
-	}
-
-	return spec
-}
-
-// RethinkVolumeClaim creates a persistent volume claim with a size in gigabytes.
-func RethinkVolumeClaim(size int) *api.PersistentVolumeClaim {
-	return &api.PersistentVolumeClaim{
-		TypeMeta: unversioned.TypeMeta{
-			Kind:       "PersistentVolumeClaim",
-			APIVersion: "v1",
-		},
-		ObjectMeta: api.ObjectMeta{
-			Name:   rethinkVolumeClaimName,
-			Labels: volumeLabels(rethinkVolumeClaimName),
-		},
-		Spec: api.PersistentVolumeClaimSpec{
-			Resources: api.ResourceRequirements{
-				Requests: map[api.ResourceName]resource.Quantity{
+			Spec: api.PersistentVolumeSpec{
+				Capacity: map[api.ResourceName]resource.Quantity{
 					"storage": resource.MustParse(fmt.Sprintf("%vGi", size)),
 				},
+				AccessModes:                   []api.PersistentVolumeAccessMode{api.ReadWriteOnce},
+				PersistentVolumeReclaimPolicy: api.PersistentVolumeReclaimRetain,
 			},
-			AccessModes: []api.PersistentVolumeAccessMode{api.ReadWriteOnce},
-		},
+		}
+
+		switch backend {
+		case amazonBackend:
+			spec.Spec.PersistentVolumeSource = api.PersistentVolumeSource{
+				AWSElasticBlockStore: &api.AWSElasticBlockStoreVolumeSource{
+					FSType:   "ext4",
+					VolumeID: names[i],
+				},
+			}
+		case googleBackend:
+			spec.Spec.PersistentVolumeSource = api.PersistentVolumeSource{
+				GCEPersistentDisk: &api.GCEPersistentDiskVolumeSource{
+					FSType: "ext4",
+					PDName: names[i],
+				},
+			}
+		case microsoftBackend:
+			dataDiskURI := names[i]
+			split := strings.Split(names[i], "/")
+			diskName := split[len(split)-1]
+
+			spec.Spec.PersistentVolumeSource = api.PersistentVolumeSource{
+				AzureDisk: &api.AzureDiskVolumeSource{
+					DiskName:    diskName,
+					DataDiskURI: dataDiskURI,
+				},
+			}
+		case localBackend:
+			spec.Spec.PersistentVolumeSource = api.PersistentVolumeSource{
+				HostPath: &api.HostPathVolumeSource{
+					Path: filepath.Join(hostPath, fmt.Sprintf("rethink-%d", i)),
+				},
+			}
+		default:
+			panic(fmt.Sprintf("Cannot generate volume spec for unknown backend \"%v\".", backend))
+		}
+		spec.CodecEncodeSelf(encoder)
+		fmt.Fprintf(w, "\n")
 	}
 }
 
 // AssetOpts are options that are applicable to all the asset types.
 type AssetOpts struct {
 	Shards             uint64
+	Registry           bool
 	RethinkdbCacheSize string
 	Version            string
 	LogLevel           string
@@ -697,16 +716,13 @@ type AssetOpts struct {
 
 // WriteAssets writes the assets to w.
 func WriteAssets(w io.Writer, opts *AssetOpts, backend backend,
-	volumeName string, volumeSize int, hostPath string) {
+	volumeNames []string, volumeSize int, hostPath string) {
 	encoder := codec.NewEncoder(w, jsonEncoderHandle)
 
 	ServiceAccount().CodecEncodeSelf(encoder)
 	fmt.Fprintf(w, "\n")
 
-	RethinkVolume(backend, hostPath, volumeName, volumeSize).CodecEncodeSelf(encoder)
-	fmt.Fprintf(w, "\n")
-	RethinkVolumeClaim(volumeSize).CodecEncodeSelf(encoder)
-	fmt.Fprintf(w, "\n")
+	WriteRethinkVolumes(w, backend, int(opts.Shards), hostPath, volumeNames, volumeSize)
 
 	EtcdRc(hostPath).CodecEncodeSelf(encoder)
 	fmt.Fprintf(w, "\n")
@@ -715,7 +731,9 @@ func WriteAssets(w io.Writer, opts *AssetOpts, backend backend,
 
 	RethinkService().CodecEncodeSelf(encoder)
 	fmt.Fprintf(w, "\n")
-	RethinkRc(backend, volumeName, hostPath, opts.RethinkdbCacheSize).CodecEncodeSelf(encoder)
+	// HeadlessRethinkService().CodecEncodeSelf(encoder)
+	// fmt.Fprintf(w, "\n")
+	encoder.Encode(RethinkPetSet(backend, int(opts.Shards), volumeSize, opts.RethinkdbCacheSize))
 	fmt.Fprintf(w, "\n")
 
 	InitJob(opts.Version).CodecEncodeSelf(encoder)
@@ -729,29 +747,29 @@ func WriteAssets(w io.Writer, opts *AssetOpts, backend backend,
 
 // WriteLocalAssets writes assets to a local backend.
 func WriteLocalAssets(w io.Writer, opts *AssetOpts, hostPath string) {
-	WriteAssets(w, opts, localBackend, "", 0, hostPath)
+	WriteAssets(w, opts, localBackend, nil, 1 /* = volume size (gb) */, hostPath)
 }
 
 // WriteAmazonAssets writes assets to an amazon backend.
 func WriteAmazonAssets(w io.Writer, opts *AssetOpts, bucket string, id string, secret string,
-	token string, region string, volumeName string, volumeSize int) {
-	WriteAssets(w, opts, amazonBackend, volumeName, volumeSize, "")
+	token string, region string, volumeNames []string, volumeSize int) {
+	WriteAssets(w, opts, amazonBackend, volumeNames, volumeSize, "")
 	encoder := codec.NewEncoder(w, jsonEncoderHandle)
 	AmazonSecret(bucket, id, secret, token, region).CodecEncodeSelf(encoder)
 	fmt.Fprintf(w, "\n")
 }
 
 // WriteGoogleAssets writes assets to a google backend.
-func WriteGoogleAssets(w io.Writer, opts *AssetOpts, bucket string, volumeName string, volumeSize int) {
-	WriteAssets(w, opts, googleBackend, volumeName, volumeSize, "")
+func WriteGoogleAssets(w io.Writer, opts *AssetOpts, bucket string, volumeNames []string, volumeSize int) {
+	WriteAssets(w, opts, googleBackend, volumeNames, volumeSize, "")
 	encoder := codec.NewEncoder(w, jsonEncoderHandle)
 	GoogleSecret(bucket).CodecEncodeSelf(encoder)
 	fmt.Fprintf(w, "\n")
 }
 
 // WriteMicrosoftAssets writes assets to a microsoft backend
-func WriteMicrosoftAssets(w io.Writer, opts *AssetOpts, container string, id string, secret string, volumeURI string, volumeSize int) {
-	WriteAssets(w, opts, microsoftBackend, volumeURI, volumeSize, "")
+func WriteMicrosoftAssets(w io.Writer, opts *AssetOpts, container string, id string, secret string, volumeURIs []string, volumeSize int) {
+	WriteAssets(w, opts, microsoftBackend, volumeURIs, volumeSize, "")
 	encoder := codec.NewEncoder(w, jsonEncoderHandle)
 	MicrosoftSecret(container, id, secret).CodecEncodeSelf(encoder)
 	fmt.Fprintf(w, "\n")
