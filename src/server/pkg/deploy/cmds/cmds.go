@@ -141,6 +141,7 @@ func DeployCmd(metrics bool) *cobra.Command {
 		Short: "Deploy a Pachyderm cluster.",
 		Long:  "Deploy a Pachyderm cluster.",
 		PersistentPreRun: func(*cobra.Command, []string) {
+			// fmt.Printf("shards: %d\n", shards)
 			opts = &assets.AssetOpts{
 				Shards:             uint64(shards),
 				RethinkdbCacheSize: rethinkdbCacheSize,

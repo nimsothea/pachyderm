@@ -3,6 +3,7 @@ package assets
 import (
 	"fmt"
 	"io"
+	"net"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -27,7 +28,9 @@ var (
 	serviceAccountName          = "pachyderm"
 	etcdName                    = "etcd"
 	pachdName                   = "pachd"
-	rethinkName                 = "rethink"
+	rethinkPetsetName           = "rethink"
+	rethinkServiceName          = "rethink-service"
+	rethinkHeadlessName         = "rethink-headless" // headless service; give Rethink pods consistent DNS addresses
 	rethinkVolumeName           = "rethink-volume"
 	rethinkVolumeClaimName      = "rethink-volume-claim"
 	registryName                = "registry"
@@ -375,7 +378,8 @@ func EtcdService() *api.Service {
 }
 
 // RethinkPetSet returns a rethinkdb pet set
-func RethinkPetSet(backend backend, replicas int, diskSpace int, cacheSize string) interface{} {
+func RethinkPetSet(backend backend, shards int, diskSpace int, cacheSize string) interface{} {
+	// fmt.Printf("Shards: %d\n", shards)
 	rethinkCacheQuantity := resource.MustParse(cacheSize)
 	containerFootprint := rethinkCacheQuantity.Copy()
 	containerFootprint.Add(rethinkNonCacheMemFootprint)
@@ -387,35 +391,38 @@ func RethinkPetSet(backend backend, replicas int, diskSpace int, cacheSize strin
 		"apiVersion": "apps/v1alpha1",
 		"kind":       "PetSet",
 		"metadata": map[string]interface{}{
-			"name":              rethinkName,
+			"name":              rethinkPetsetName,
 			"creationTimestamp": nil,
-			"labels":            labels(rethinkName),
+			"labels":            labels(rethinkServiceName),
 		},
 		"spec": map[string]interface{}{
-			"serviceName": rethinkName, // + "-service",
-			"replicas":    replicas,
+			// Effectively configures a RC
+			// "serviceName": rethinkServiceName,
+			"serviceName": rethinkHeadlessName,
+			"replicas":    shards,
 			"selector": map[string]interface{}{
-				"matchLabels": labels(rethinkName),
+				"matchLabels": labels(rethinkPetsetName),
 			},
 
 			// pod template
 			"template": map[string]interface{}{
 				"metadata": map[string]interface{}{
-					"name":              rethinkName,
+					"name":              rethinkPetsetName,
 					"creationTimestamp": nil,
-					"labels":            labels(rethinkName),
+					"annotations":       map[string]string{"pod.alpha.kubernetes.io/initialized": "true"},
+					"labels":            labels(rethinkPetsetName),
 				},
 				"spec": map[string]interface{}{
 					"containers": []interface{}{
 						map[string]interface{}{
-							"name":    rethinkName,
+							"name":    rethinkPetsetName,
 							"image":   rethinkImage,
 							"command": []string{"rethinkdb"},
 							"args": []string{
 								"-d", "/var/rethinkdb/data",
 								"--bind", "all",
 								"--cache-size", strconv.FormatInt(rethinkCacheQuantity.ScaledValue(resource.Mega), 10),
-								// "--join", kk
+								"--join", net.JoinHostPort("rethink-0.rethink-headless.default.svc.cluster.local", "29015"),
 							},
 							"ports": []interface{}{
 								map[string]interface{}{
@@ -451,7 +458,7 @@ func RethinkPetSet(backend backend, replicas int, diskSpace int, cacheSize strin
 				map[string]interface{}{
 					"metadata": map[string]interface{}{
 						"name":   rethinkVolumeClaimName,
-						"labels": labels(rethinkName),
+						"labels": labels(rethinkVolumeName),
 					},
 					"spec": map[string]interface{}{
 						"resources": map[string]interface{}{
@@ -475,14 +482,18 @@ func HeadlessRethinkService() *api.Service {
 			APIVersion: "v1",
 		},
 		ObjectMeta: api.ObjectMeta{
-			Name:   rethinkName + "-headless",
-			Labels: labels(rethinkName),
+			Name:   rethinkHeadlessName,
+			Labels: labels(rethinkServiceName),
 		},
 		Spec: api.ServiceSpec{
-			Selector: map[string]string{
-				"app": rethinkName,
-			},
+			Selector:  labels(rethinkPetsetName),
 			ClusterIP: "None",
+			Ports: []api.ServicePort{
+				{
+					Port: 29015,
+					Name: "cluster-port",
+				},
+			},
 		},
 	}
 }
@@ -495,14 +506,12 @@ func RethinkService() *api.Service {
 			APIVersion: "v1",
 		},
 		ObjectMeta: api.ObjectMeta{
-			Name:   rethinkName, // + "-service",
-			Labels: labels(rethinkName),
+			Name:   rethinkServiceName,
+			Labels: labels(rethinkServiceName),
 		},
 		Spec: api.ServiceSpec{
-			Type: api.ServiceTypeNodePort,
-			Selector: map[string]string{
-				"app": rethinkName,
-			},
+			Type:     api.ServiceTypeNodePort,
+			Selector: labels(rethinkPetsetName),
 			Ports: []api.ServicePort{
 				{
 					Port:     8080,
@@ -513,11 +522,6 @@ func RethinkService() *api.Service {
 					Port:     28015,
 					Name:     "driver-port",
 					NodePort: 32081,
-				},
-				{
-					Port:     29015,
-					Name:     "cluster-port",
-					NodePort: 32082,
 				},
 			},
 		},
@@ -641,6 +645,7 @@ func MicrosoftSecret(container string, id string, secret string) *api.Secret {
 // RethinkVolume creates a persistent volume with a backend
 // (local, amazon, google), a name, and a size in gigabytes.
 func WriteRethinkVolumes(w io.Writer, backend backend, shards int, hostPath string, names []string, size int) {
+	// fmt.Printf("RethinkVolumes: %d\n", shards)
 	if backend != localBackend && len(names) < shards {
 		panic(fmt.Errorf("Could not create non-local rethink cluster with %d shards, as there are only %d external volumes.", shards, len(names)))
 	}
@@ -717,6 +722,7 @@ type AssetOpts struct {
 // WriteAssets writes the assets to w.
 func WriteAssets(w io.Writer, opts *AssetOpts, backend backend,
 	volumeNames []string, volumeSize int, hostPath string) {
+	// fmt.Printf("opts.Shards: %d\n", opts.Shards)
 	encoder := codec.NewEncoder(w, jsonEncoderHandle)
 
 	ServiceAccount().CodecEncodeSelf(encoder)
@@ -731,8 +737,8 @@ func WriteAssets(w io.Writer, opts *AssetOpts, backend backend,
 
 	RethinkService().CodecEncodeSelf(encoder)
 	fmt.Fprintf(w, "\n")
-	// HeadlessRethinkService().CodecEncodeSelf(encoder)
-	// fmt.Fprintf(w, "\n")
+	HeadlessRethinkService().CodecEncodeSelf(encoder)
+	fmt.Fprintf(w, "\n")
 	encoder.Encode(RethinkPetSet(backend, int(opts.Shards), volumeSize, opts.RethinkdbCacheSize))
 	fmt.Fprintf(w, "\n")
 

@@ -52,7 +52,7 @@ type appEnv struct {
 	NumShards          uint64 `env:"NUM_SHARDS,default=32"`
 	StorageRoot        string `env:"PACH_ROOT,required"`
 	StorageBackend     string `env:"STORAGE_BACKEND,default="`
-	DatabaseAddress    string `env:"RETHINK_PORT_28015_TCP_ADDR,required"`
+	DatabaseAddress    string `env:"RETHINK_SERVICE_PORT_28015_TCP_ADDR,required"`
 	PPSDatabaseName    string `env:"DATABASE_NAME,default=pachyderm_pps"`
 	PFSDatabaseName    string `env:"DATABASE_NAME,default=pachyderm_pfs"`
 	KubeAddress        string `env:"KUBERNETES_PORT_443_TCP_ADDR,required"`
