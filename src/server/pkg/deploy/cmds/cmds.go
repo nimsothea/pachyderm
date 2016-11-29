@@ -63,22 +63,24 @@ func DeployCmd(noMetrics *bool) *cobra.Command {
 	deployLocal.Flags().BoolVarP(&dev, "dev", "d", false, "Don't use a specific version of pachyderm/pachd.")
 
 	deployGoogle := &cobra.Command{
-		Use:   "google <GCS bucket> <GCE persistent disk> <Disk size (in GB)>",
+		Use:   "google <GCS bucket> <GCE persistent disks> <Disk size (in GB)>",
 		Short: "Deploy a Pachyderm cluster running on GCP.",
-		Long:  "Deploy a Pachyderm cluster running on GCP.",
+		Long: "Deploy a Pachyderm cluster running on GCP. Arguments are:\n" +
+			"  <GCS bucket>: A GCS bucket where Pachyderm will store PFS data.\n" +
+			"  <GCE persistent disks>: A comma-separated list of GCE persistent disks, one per rethink shard (see --shards).\n" +
+			"  <Disk size>: Size of GCE persistent disks (assumed to all be the same).\n",
 		Run: pkgcobra.RunBoundedArgs(pkgcobra.Bounds{Min: 3, Max: 3}, func(args []string) (retErr error) {
 			if metrics && !dev {
 				metricsFn := _metrics.ReportAndFlushUserAction("Deploy")
 				defer func(start time.Time) { metricsFn(start, retErr) }(time.Now())
 			}
-			volumeName := args[1]
+			volumeNames := strings.Split(args[1], ",")
 			volumeSize, err := strconv.Atoi(args[2])
 			if err != nil {
 				return fmt.Errorf("volume size needs to be an integer; instead got %v", args[2])
 			}
 			manifest := &bytes.Buffer{}
-			assets.WriteGoogleAssets(manifest, opts, args[0],
-				volumeName, volumeSize)
+			assets.WriteGoogleAssets(manifest, opts, args[0], volumeNames, volumeSize)
 			return maybeKcCreate(dryRun, manifest)
 		}),
 	}
@@ -92,14 +94,14 @@ func DeployCmd(noMetrics *bool) *cobra.Command {
 				metricsFn := _metrics.ReportAndFlushUserAction("Deploy")
 				defer func(start time.Time) { metricsFn(start, retErr) }(time.Now())
 			}
-			volumeName := args[5]
+			volumeNames := strings.Split(args[5], ",")
 			volumeSize, err := strconv.Atoi(args[6])
 			if err != nil {
 				return fmt.Errorf("volume size needs to be an integer; instead got %v", args[6])
 			}
 			manifest := &bytes.Buffer{}
 			assets.WriteAmazonAssets(manifest, opts, args[0], args[1], args[2], args[3],
-				args[4], volumeName, volumeSize)
+				args[4], volumeNames, volumeSize)
 			return maybeKcCreate(dryRun, manifest)
 		}),
 	}
@@ -113,20 +115,23 @@ func DeployCmd(noMetrics *bool) *cobra.Command {
 				metricsFn := _metrics.ReportAndFlushUserAction("Deploy")
 				defer func(start time.Time) { metricsFn(start, retErr) }(time.Now())
 			}
-			_, err := base64.StdEncoding.DecodeString(args[2])
-			if err != nil {
+			if _, err := base64.StdEncoding.DecodeString(args[2]); err != nil {
 				return fmt.Errorf("storage-account-key needs to be base64 encoded; instead got '%v'", args[2])
 			}
-			volumeURI, err := url.ParseRequestURI(args[3])
-			if err != nil {
-				return fmt.Errorf("volume-uri needs to be a well-formed URI; instead got '%v'", args[3])
+			volumeURIs := strings.Split(args[3], ",")
+			for i, uri := range volumeURIs {
+				tempURI, err := url.ParseRequestURI(uri)
+				if err != nil {
+					return fmt.Errorf("All volume-uris needs to be a well-formed URI; instead got '%v'", uri)
+				}
+				volumeURIs[i] = tempURI.String()
 			}
 			volumeSize, err := strconv.Atoi(args[4])
 			if err != nil {
 				return fmt.Errorf("volume size needs to be an integer; instead got %v", args[4])
 			}
 			manifest := &bytes.Buffer{}
-			assets.WriteMicrosoftAssets(manifest, opts, args[0], args[1], args[2], volumeURI.String(), volumeSize)
+			assets.WriteMicrosoftAssets(manifest, opts, args[0], args[1], args[2], volumeURIs, volumeSize)
 			return maybeKcCreate(dryRun, manifest)
 		}),
 	}
@@ -145,7 +150,7 @@ func DeployCmd(noMetrics *bool) *cobra.Command {
 			}
 		},
 	}
-	cmd.PersistentFlags().IntVarP(&shards, "shards", "s", 32, "The static number of shards for pfs.")
+	cmd.PersistentFlags().IntVarP(&shards, "shards", "s", 1, "The static number of RethinkDB shards (for pfs metadata storage).")
 	cmd.PersistentFlags().BoolVarP(&dryRun, "dry-run", "", false, "Don't actually deploy pachyderm to Kubernetes, instead just print the manifest.")
 	cmd.PersistentFlags().StringVar(&rethinkdbCacheSize, "rethinkdb-cache-size", "768M", "Size of in-memory cache to use for Pachyderm's RethinkDB instance, "+
 		"e.g. \"2G\". Default is \"768M\". Size is specified in bytes, with allowed SI suffixes (M, K, G, Mi, Ki, Gi, etc)")
