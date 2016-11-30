@@ -3,6 +3,7 @@ package assets
 import (
 	"fmt"
 	"io"
+	"net"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -17,23 +18,26 @@ import (
 )
 
 var (
-	suite                  = "pachyderm"
-	volumeSuite            = "pachyderm-pps-storage"
-	pachdImage             = "pachyderm/pachd"
-	etcdImage              = "gcr.io/google_containers/etcd:2.0.12"
-	rethinkImage           = "rethinkdb:2.3.3"
-	serviceAccountName     = "pachyderm"
-	etcdName               = "etcd"
-	pachdName              = "pachd"
-	rethinkName            = "rethink"
-	rethinkVolumeName      = "rethink-volume"
-	rethinkVolumeClaimName = "rethink-volume-claim"
-	amazonSecretName       = "amazon-secret"
-	googleSecretName       = "google-secret"
-	microsoftSecretName    = "microsoft-secret"
-	initName               = "pachd-init"
-	trueVal                = true
-	jsonEncoderHandle      = &codec.JsonHandle{
+	suite                       = "pachyderm"
+	volumeSuite                 = "pachyderm-pps-storage"
+	pachdImage                  = "pachyderm/pachd"
+	etcdImage                   = "gcr.io/google_containers/etcd:2.0.12"
+	rethinkImage                = "rethinkdb:2.3.3"
+	rethinkNonCacheMemFootprint = resource.MustParse("256M") // Amount of memory needed by rethink beyond the cache
+	serviceAccountName          = "pachyderm"
+	etcdName                    = "etcd"
+	pachdName                   = "pachd"
+	rethinkControllerName       = "rethink" // Used by both the RethinkDB PetSet and ReplicationController (whichever is enabled)
+	rethinkServiceName          = "rethink"
+	rethinkHeadlessName         = "rethink-headless" // headless service; give Rethink pods consistent DNS addresses
+	rethinkVolumeName           = "rethink-volume"
+	rethinkVolumeClaimName      = "rethink-volume-claim"
+	amazonSecretName            = "amazon-secret"
+	googleSecretName            = "google-secret"
+	microsoftSecretName         = "microsoft-secret"
+	initName                    = "pachd-init"
+	trueVal                     = true
+	jsonEncoderHandle           = &codec.JsonHandle{
 		BasicHandle: codec.BasicHandle{
 			EncodeOptions: codec.EncodeOptions{Canonical: true},
 		},
@@ -383,23 +387,23 @@ func RethinkRc(backend backend, volume string, hostPath string, rethinkdbCacheSi
 			APIVersion: "v1",
 		},
 		ObjectMeta: api.ObjectMeta{
-			Name:   rethinkName,
-			Labels: labels(rethinkName),
+			Name:   rethinkControllerName,
+			Labels: labels(rethinkControllerName),
 		},
 		Spec: api.ReplicationControllerSpec{
 			Replicas: &replicas,
 			Selector: map[string]string{
-				"app": rethinkName,
+				"app": rethinkControllerName,
 			},
 			Template: &api.PodTemplateSpec{
 				ObjectMeta: api.ObjectMeta{
-					Name:   rethinkName,
-					Labels: labels(rethinkName),
+					Name:   rethinkControllerName,
+					Labels: labels(rethinkControllerName),
 				},
 				Spec: api.PodSpec{
 					Containers: []api.Container{
 						{
-							Name:  rethinkName,
+							Name:  rethinkControllerName,
 							Image: rethinkImage,
 							//TODO figure out how to get a cluster of these to talk to each other
 							Command: []string{"rethinkdb"},
@@ -455,7 +459,6 @@ func RethinkRc(backend backend, volume string, hostPath string, rethinkdbCacheSi
 
 // RethinkPetSet returns a rethinkdb pet set
 func RethinkPetSet(backend backend, shards int, diskSpace int, cacheSize string) interface{} {
-	// fmt.Printf("Shards: %d\n", shards)
 	rethinkCacheQuantity := resource.MustParse(cacheSize)
 	containerFootprint := rethinkCacheQuantity.Copy()
 	containerFootprint.Add(rethinkNonCacheMemFootprint)
@@ -467,31 +470,30 @@ func RethinkPetSet(backend backend, shards int, diskSpace int, cacheSize string)
 		"apiVersion": "apps/v1alpha1",
 		"kind":       "PetSet",
 		"metadata": map[string]interface{}{
-			"name":              rethinkPetsetName,
+			"name":              rethinkControllerName,
 			"creationTimestamp": nil,
 			"labels":            labels(rethinkServiceName),
 		},
 		"spec": map[string]interface{}{
 			// Effectively configures a RC
-			// "serviceName": rethinkServiceName,
 			"serviceName": rethinkHeadlessName,
 			"replicas":    shards,
 			"selector": map[string]interface{}{
-				"matchLabels": labels(rethinkPetsetName),
+				"matchLabels": labels(rethinkControllerName),
 			},
 
 			// pod template
 			"template": map[string]interface{}{
 				"metadata": map[string]interface{}{
-					"name":              rethinkPetsetName,
+					"name":              rethinkControllerName,
 					"creationTimestamp": nil,
 					"annotations":       map[string]string{"pod.alpha.kubernetes.io/initialized": "true"},
-					"labels":            labels(rethinkPetsetName),
+					"labels":            labels(rethinkControllerName),
 				},
 				"spec": map[string]interface{}{
 					"containers": []interface{}{
 						map[string]interface{}{
-							"name":    rethinkPetsetName,
+							"name":    rethinkControllerName,
 							"image":   rethinkImage,
 							"command": []string{"rethinkdb"},
 							"args": []string{
@@ -550,8 +552,8 @@ func RethinkPetSet(backend backend, shards int, diskSpace int, cacheSize string)
 	}
 }
 
-// HeadlessRethinkService returns a headless rethinkdb service, which is only for DNS resolution.
-func HeadlessRethinkService() *api.Service {
+// RethinkHeadlessService returns a headless rethinkdb service, which is only for DNS resolution.
+func RethinkHeadlessService() *api.Service {
 	return &api.Service{
 		TypeMeta: unversioned.TypeMeta{
 			Kind:       "Service",
@@ -562,7 +564,7 @@ func HeadlessRethinkService() *api.Service {
 			Labels: labels(rethinkServiceName),
 		},
 		Spec: api.ServiceSpec{
-			Selector:  labels(rethinkPetsetName),
+			Selector:  labels(rethinkControllerName),
 			ClusterIP: "None",
 			Ports: []api.ServicePort{
 				{
@@ -574,8 +576,8 @@ func HeadlessRethinkService() *api.Service {
 	}
 }
 
-// RethinkService returns a rethinkdb NodePort service.
-func RethinkNodeportService(rethinkPetset bool) *api.Service {
+// RethinkNodeportService returns a rethinkdb NodePort service.
+func RethinkNodeportService(opts *AssetOpts) *api.Service {
 	serviceDef := &api.Service{
 		TypeMeta: unversioned.TypeMeta{
 			Kind:       "Service",
@@ -587,7 +589,7 @@ func RethinkNodeportService(rethinkPetset bool) *api.Service {
 		},
 		Spec: api.ServiceSpec{
 			Type:     api.ServiceTypeNodePort,
-			Selector: labels(rethinkPetsetName),
+			Selector: labels(rethinkControllerName),
 			Ports: []api.ServicePort{
 				{
 					Port:     8080,
@@ -603,12 +605,13 @@ func RethinkNodeportService(rethinkPetset bool) *api.Service {
 		},
 	}
 
-	if rethinkPetset {
-		append(serviceDef.Spec.Ports, api.ServicePort{
-					Port: 29015,
-					Name: "cluster-port",
-				})
+	if opts.DeployRethinkAsRc {
+		serviceDef.Spec.Ports = append(serviceDef.Spec.Ports, api.ServicePort{
+			Port: 29015,
+			Name: "cluster-port",
+		})
 	}
+	return serviceDef
 }
 
 // InitJob returns a pachd-init job.
@@ -822,10 +825,10 @@ type AssetOpts struct {
 	Version            string
 	LogLevel           string
 	Metrics            bool
-	
+
 	// Deploy single-node rethink managed by a RC, rather than a multi-node,
 	// highly-available PetSet. This will be necessary until GKE supports PetSets
-	DeployRethinkAsRc  bool
+	DeployRethinkAsRc bool
 }
 
 // WriteAssets writes the assets to w.
@@ -844,14 +847,17 @@ func WriteAssets(w io.Writer, opts *AssetOpts, backend backend,
 	EtcdService().CodecEncodeSelf(encoder)
 	fmt.Fprintf(w, "\n")
 
-	RethinkService().CodecEncodeSelf(encoder)
+	RethinkNodeportService(opts).CodecEncodeSelf(encoder)
 	fmt.Fprintf(w, "\n")
 	if opts.DeployRethinkAsRc {
-		RethinkRc(backend, volumeName, hostPath, opts.RethinkdbCacheSize).CodecEncodeSelf(encoder)
+		if len(volumeNames) != 1 {
+			panic(fmt.Sprintf("RethinkDB can only be managed by a ReplicationController as a single instance, but recieved %d volumes", len(volumeNames)))
+		}
+		RethinkRc(backend, volumeNames[0], hostPath, opts.RethinkdbCacheSize).CodecEncodeSelf(encoder)
 	} else {
 		encoder.Encode(RethinkPetSet(backend, int(opts.Shards), volumeSize, opts.RethinkdbCacheSize))
 		fmt.Fprintf(w, "\n")
-		HeadlessRethinkService().CodecEncodeSelf(encoder)
+		RethinkHeadlessService().CodecEncodeSelf(encoder)
 	}
 	fmt.Fprintf(w, "\n")
 

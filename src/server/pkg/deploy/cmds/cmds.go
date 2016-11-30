@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/pachyderm/pachyderm/src/client/version"
@@ -38,6 +39,7 @@ func DeployCmd(noMetrics *bool) *cobra.Command {
 	var hostPath string
 	var dev bool
 	var dryRun bool
+	var deployRethinkAsRc bool
 	var rethinkdbCacheSize string
 	var logLevel string
 	var opts *assets.AssetOpts
@@ -151,10 +153,12 @@ func DeployCmd(noMetrics *bool) *cobra.Command {
 		},
 	}
 	cmd.PersistentFlags().IntVarP(&shards, "shards", "s", 1, "The static number of RethinkDB shards (for pfs metadata storage).")
-	cmd.PersistentFlags().BoolVarP(&dryRun, "dry-run", "", false, "Don't actually deploy pachyderm to Kubernetes, instead just print the manifest.")
+	cmd.PersistentFlags().BoolVar(&dryRun, "dry-run", false, "Don't actually deploy pachyderm to Kubernetes, instead just print the manifest.")
 	cmd.PersistentFlags().StringVar(&rethinkdbCacheSize, "rethinkdb-cache-size", "768M", "Size of in-memory cache to use for Pachyderm's RethinkDB instance, "+
-		"e.g. \"2G\". Default is \"768M\". Size is specified in bytes, with allowed SI suffixes (M, K, G, Mi, Ki, Gi, etc)")
+		"e.g. \"2G\". Size is specified in bytes, with allowed SI suffixes (M, K, G, Mi, Ki, Gi, etc)")
 	cmd.Flags().StringVar(&logLevel, "log-level", "info", "The level of log messages to print options are, from least to most verbose: \"error\", \"info\", \"debug\".")
+	cmd.Flags().BoolVar(&deployRethinkAsRc, "deploy-rethink-as-rc", false, "Deploy RethinkDB as a single-node cluster controlled by kubernetes ReplicationController,"+
+		"instead of a multi-node cluster controlled by a PetSet. This is for compatibility with GKE, which does not publicly support PetSets yet")
 	cmd.AddCommand(deployLocal)
 	cmd.AddCommand(deployAmazon)
 	cmd.AddCommand(deployGoogle)

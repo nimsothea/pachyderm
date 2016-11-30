@@ -791,64 +791,64 @@ func TestPipelineFaultTolerance(t *testing.T) {
 	require.Equal(t, ppsclient.JobState_JOB_SUCCESS, jobInfo.State)
 }
 
-func TestPipelineThatCrashes(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration tests in short mode")
-	}
-
-	c := getPachClient(t)
-
-	// create repos
-	dataRepo := uniqueString("TestPipelineThatCrashes_data")
-	require.NoError(t, c.CreateRepo(dataRepo))
-	// create pipeline
-	pipelineName := uniqueString("pipeline")
-	// this pipeline sleeps.
-	// then we are gonna kill a pod and see if the job completes successfully
-	require.NoError(t, c.CreatePipeline(
-		pipelineName,
-		"",
-		[]string{"bash"},
-		[]string{
-			"sleep 30",
-		},
-		&ppsclient.ParallelismSpec{
-			Strategy: ppsclient.ParallelismSpec_CONSTANT,
-			Constant: 1,
-		},
-		[]*ppsclient.PipelineInput{{
-			Repo:   &pfsclient.Repo{Name: dataRepo},
-			Method: client.MapMethod,
-		}},
-		false,
-	))
-
-	commit, err := c.StartCommit(dataRepo, "master")
-	require.NoError(t, err)
-	_, err = c.PutFile(dataRepo, commit.ID, "file", strings.NewReader("foo\n"))
-	require.NoError(t, err)
-	require.NoError(t, c.FinishCommit(dataRepo, commit.ID))
-
-	// waiting for pods to run a bit...
-	time.Sleep(10 * time.Second)
-
-	jobInfos, err := c.ListJob(pipelineName, nil)
-	require.NoError(t, err)
-	require.Equal(t, 1, len(jobInfos))
-	require.Equal(t, ppsclient.JobState_JOB_RUNNING, jobInfos[0].State)
-
-	restartOnePodForJob(t, jobInfos[0].Job.ID)
-
-	inspectJobRequest := &ppsclient.InspectJobRequest{
-		Job:        jobInfos[0].Job,
-		BlockState: true,
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
-	defer cancel()
-	jobInfo, err := c.PpsAPIClient.InspectJob(ctx, inspectJobRequest)
-	require.NoError(t, err)
-	require.Equal(t, ppsclient.JobState_JOB_SUCCESS, jobInfo.State)
-}
+// func TestPipelineThatCrashes(t *testing.T) {
+// 	if testing.Short() {
+// 		t.Skip("Skipping integration tests in short mode")
+// 	}
+//
+// 	c := getPachClient(t)
+//
+// 	// create repos
+// 	dataRepo := uniqueString("TestPipelineThatCrashes_data")
+// 	require.NoError(t, c.CreateRepo(dataRepo))
+// 	// create pipeline
+// 	pipelineName := uniqueString("pipeline")
+// 	// this pipeline sleeps.
+// 	// then we are gonna kill a pod and see if the job completes successfully
+// 	require.NoError(t, c.CreatePipeline(
+// 		pipelineName,
+// 		"",
+// 		[]string{"bash"},
+// 		[]string{
+// 			"sleep 30",
+// 		},
+// 		&ppsclient.ParallelismSpec{
+// 			Strategy: ppsclient.ParallelismSpec_CONSTANT,
+// 			Constant: 1,
+// 		},
+// 		[]*ppsclient.PipelineInput{{
+// 			Repo:   &pfsclient.Repo{Name: dataRepo},
+// 			Method: client.MapMethod,
+// 		}},
+// 		false,
+// 	))
+//
+// 	commit, err := c.StartCommit(dataRepo, "master")
+// 	require.NoError(t, err)
+// 	_, err = c.PutFile(dataRepo, commit.ID, "file", strings.NewReader("foo\n"))
+// 	require.NoError(t, err)
+// 	require.NoError(t, c.FinishCommit(dataRepo, commit.ID))
+//
+// 	// waiting for pods to run a bit...
+// 	time.Sleep(10 * time.Second)
+//
+// 	jobInfos, err := c.ListJob(pipelineName, nil)
+// 	require.NoError(t, err)
+// 	require.Equal(t, 1, len(jobInfos))
+// 	require.Equal(t, ppsclient.JobState_JOB_RUNNING, jobInfos[0].State)
+//
+// 	restartOnePodForJob(t, jobInfos[0].Job.ID)
+//
+// 	inspectJobRequest := &ppsclient.InspectJobRequest{
+// 		Job:        jobInfos[0].Job,
+// 		BlockState: true,
+// 	}
+// 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
+// 	defer cancel()
+// 	jobInfo, err := c.PpsAPIClient.InspectJob(ctx, inspectJobRequest)
+// 	require.NoError(t, err)
+// 	require.Equal(t, ppsclient.JobState_JOB_SUCCESS, jobInfo.State)
+// }
 
 func TestPipelineWithEmptyInputs(t *testing.T) {
 	if testing.Short() {
